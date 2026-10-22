@@ -30,14 +30,20 @@ def load_dataset(
             print(f"[DataLoader] Загрузка данных из: {p.resolve()}")
             return _read_and_validate(p)
 
-    # 2. Поиск в raw_dir
+    # 2. Поиск в raw_dir размеченных датасетов (содержащих целевую переменную defect_class)
     raw_path = Path(raw_dir)
     if raw_path.exists():
         raw_files = list(raw_path.glob("*.csv"))
-        if raw_files:
-            target = raw_files[0]
-            print(f"[DataLoader] Обнаружен сырой файл данных: {target.resolve()}")
-            return _read_and_validate(target)
+        for target in raw_files:
+            try:
+                cols = pd.read_csv(target, nrows=2).columns
+                if "defect_class" in cols:
+                    print(f"[DataLoader] Обнаружен размеченный сырой файл данных: {target.resolve()}")
+                    return _read_and_validate(target)
+                else:
+                    print(f"[DataLoader] Файл {target.name} содержит сырую телеметрию без целевой метки 'defect_class'.")
+            except Exception:
+                continue
 
     # 3. Поиск в synthetic_dir
     synth_path = Path(synthetic_dir)
@@ -50,11 +56,11 @@ def load_dataset(
 
     # 4. Автогенерация
     if auto_generate:
-        print("[DataLoader] Данные не обнаружены. Запуск физической генерации временного ряда...")
+        print("[DataLoader] Размеченные данные не обнаружены. Запуск физической генерации временного ряда...")
         df = generate_weather_and_heave_data(output_dir=synth_path)
         return df
 
-    raise FileNotFoundError(f"Данные не найдены в {raw_dir} или {synthetic_dir}, и auto_generate=False.")
+    raise FileNotFoundError(f"Размеченные данные не найдены в {raw_dir} или {synthetic_dir}, и auto_generate=False.")
 
 
 def _read_and_validate(file_path: Path) -> pd.DataFrame:

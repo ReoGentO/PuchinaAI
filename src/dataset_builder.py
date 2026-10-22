@@ -120,6 +120,7 @@ def prepare_chronological_splits(
 
     # Синхронизация табличных признаков и меток с последовательностями
     aligned_df = lagged_df.iloc[valid_indices].reset_index(drop=True)
+    aligned_df["date"] = pd.to_datetime(aligned_df["date"])
     X_tab_all = aligned_df[tabular_features].values.astype(np.float32)
     y_all = aligned_df["target_y"].values.astype(int)
 
