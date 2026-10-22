@@ -132,8 +132,14 @@ def prepare_chronological_splits(
     # Корректно работает как для одиночных рядов, так и для мульти-постовой телеметрии
     unique_dates = np.sort(aligned_df["date"].unique())
     n_dates = len(unique_dates)
-    train_date_end = unique_dates[int(n_dates * train_ratio)]
-    val_date_end = unique_dates[int(n_dates * (train_ratio + val_ratio))]
+
+    # Для коротких рядов (<= 3 лет) жесткая отсечка 70% оставляет в 15% тесте лишь 4 зимних месяца.
+    # Для обеспечения полного сезонного цикла в тестовой выборке используем адаптивный баланс.
+    eff_train = train_ratio if n_dates > 1000 else 0.55
+    eff_val = val_ratio if n_dates > 1000 else 0.15
+
+    train_date_end = unique_dates[int(n_dates * eff_train)]
+    val_date_end = unique_dates[int(n_dates * (eff_train + eff_val))]
 
     train_mask = (aligned_df["date"] < train_date_end).values
     val_mask = ((aligned_df["date"] >= train_date_end) & (aligned_df["date"] < val_date_end)).values

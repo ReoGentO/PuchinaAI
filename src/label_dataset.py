@@ -110,37 +110,42 @@ def label_telemetry_dataset(
             tsum = tsum30[i]
             tavg = tavg30[i]
 
-            # Летний безаварийный режим при устойчивых положительных температурах
-            if tavg > 6.0 and f30 == 0:
+            # 1. Летний талый режим: верхний слой грунта талый (T_0.2 > 1.0 °C) и теплая погода -> Норма (Класс 0)
+            if t_02[i] > 1.0 and tavg > 0.0:
                 target_class[i] = 0
-                heave_target[i] = 0.1
+                heave_target[i] = 0.2
                 continue
 
-            cycle_score = 0.95 * f30 + 0.55 * f10
-            moist_mult = float(np.clip((m - w_critical) / 6.0, 0.0, 2.5))
-            cold_mult = float(np.clip(abs(tsum) / 160.0, 0.0, 2.5))
-            hp_damp = 0.30 if is_hp else 1.0
+            w_factor = max(0.0, (m - w_critical) / 6.0)
+            cold_factor = min(2.0, abs(tsum) / 120.0)
 
-            # Фоновое равномерное пучение от глубокого холода (до 1.6 см)
-            uniform_h = min(1.6, 0.35 * cold_mult) * hp_damp
-            # Сегрегационное пучение за счет циклической подкачки влаги
-            segregation_h = (0.55 * cycle_score * moist_mult * (0.3 + 0.7 * cold_mult)) * hp_damp
-            heave_val = 0.20 + uniform_h + segregation_h
+            # Равномерное сезонное промерзание (до 1.6 см)
+            uniform_h = 1.2 * cold_factor * w_factor
 
-            # Криогенное усталостное растрескивание асфальтобетона при циклах
-            z_c2 = -4.5 + cycle_score * moist_mult + 0.30 * (m - 20.0) - 0.002 * tsum - (3.0 if is_hp else 0.0)
-            p_c2 = 1.0 / (1.0 + np.exp(-z_c2))
-            is_c2 = (p_c2 > 0.40) or (heave_val >= 3.0)
+            # Сегрегационная подкачка влаги от знакопеременных циклов F_cross
+            cycle_score = 0.90 * f30 + 0.50 * f10
+            segregation_h = 0.55 * (cycle_score ** 1.1) * w_factor
 
-            if is_c2 and tavg < 12.0:
+            total_h = round(uniform_h + segregation_h, 2)
+
+            # Морозобойное расклинивание от циклов замерзания
+            crack_score = -4.5 + cycle_score * w_factor + 0.30 * (m - 20.0) - 0.002 * tsum
+            p_crack = 1.0 / (1.0 + np.exp(-crack_score))
+            crack = (p_crack > 0.45) or (total_h >= 3.0)
+
+            # Категорирование дефектов:
+            # Класс 2 (Аварийное): разрушение от криогенных циклов F_cross (трещины и бугры >= 3.0 см)
+            # Класс 1 (Преддефект): штатное сезонное промерзание без циклов
+            # Класс 0 (Норма): талое бездефектное состояние
+            if crack and cycle_score >= 1.5:
                 target_class[i] = 2
-                heave_target[i] = max(3.1, round(heave_val, 2))
-            elif (heave_val >= 1.0 or t_02[i] < 0) and tavg < 15.0:
+                heave_target[i] = max(3.1, total_h)
+            elif total_h >= 1.0 or tsum < -20.0 or t_02[i] <= 0.0:
                 target_class[i] = 1
-                heave_target[i] = round(heave_val, 2)
+                heave_target[i] = round(max(1.0, total_h), 2)
             else:
                 target_class[i] = 0
-                heave_target[i] = round(min(0.9, heave_val), 2)
+                heave_target[i] = round(min(0.9, total_h), 2)
 
         # Проявление дефектов через лаг созревания tau = 30 дней
         defect_class = np.zeros(n, dtype=int)
