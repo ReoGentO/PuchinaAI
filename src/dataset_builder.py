@@ -55,15 +55,21 @@ def build_lagged_dataset(
     output_dir: str | Path | None = None,
 ) -> pd.DataFrame:
     """Формирует датасет для заданного горизонта прогноза tau."""
-    # 1. Расчет физических признаков
-    feat_df = compute_physical_features(df, window_days=window_days)
-
-    # 2. Инженерия лага: Y(t) = состояние дороги через horizon_days
-    # Сдвигаем defect_class назад во времени
-    feat_df["target_y"] = feat_df["defect_class"].shift(-horizon_days)
+    # 1. Расчет физических признаков и сдвиг лага
+    if "site_id" in df.columns:
+        site_dfs = []
+        for s, group in df.groupby("site_id"):
+            group_sorted = group.sort_values("date").reset_index(drop=True)
+            group_feat = compute_physical_features(group_sorted, window_days=window_days)
+            group_feat["target_y"] = group_feat["defect_class"].shift(-horizon_days)
+            site_dfs.append(group_feat)
+        feat_df = pd.concat(site_dfs, ignore_index=True)
+    else:
+        feat_df = compute_physical_features(df, window_days=window_days)
+        feat_df["target_y"] = feat_df["defect_class"].shift(-horizon_days)
 
     # Исключаем последние дни, для которых нет будущего горизонта
-    valid_df = feat_df.dropna(subset=["target_y"]).copy()
+    valid_df = feat_df.dropna(subset=["target_y"]).reset_index(drop=True)
     valid_df["target_y"] = valid_df["target_y"].astype(int)
 
     if output_dir is not None:

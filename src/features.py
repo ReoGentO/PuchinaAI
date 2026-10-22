@@ -139,6 +139,19 @@ def extract_sequential_windows(
     if "snow_depth" not in work_df.columns:
         work_df["snow_depth"] = 0.0
 
+    if "site_id" in work_df.columns:
+        windows = []
+        valid_indices = []
+        for s, group in work_df.groupby("site_id"):
+            g_indices = group.index.values
+            g_feat = group[feature_cols].values.astype(np.float32)
+            if len(g_feat) < seq_length:
+                continue
+            for i in range(seq_length - 1, len(g_feat)):
+                windows.append(g_feat[i - seq_length + 1 : i + 1])
+                valid_indices.append(g_indices[i])
+        return np.array(windows, dtype=np.float32), np.array(valid_indices, dtype=int)
+
     feat_matrix = work_df[feature_cols].values.astype(np.float32)
     n_samples = len(work_df)
 
