@@ -127,38 +127,41 @@ def prepare_chronological_splits(
     # Синхронизация табличных признаков и меток с последовательностями
     aligned_df = lagged_df.iloc[valid_indices].reset_index(drop=True)
     aligned_df["date"] = pd.to_datetime(aligned_df["date"])
+
+    # Истинное хронологическое разбиение по уникальным календарным датам
+    # Корректно работает как для одиночных рядов, так и для мульти-постовой телеметрии
+    unique_dates = np.sort(aligned_df["date"].unique())
+    n_dates = len(unique_dates)
+    train_date_end = unique_dates[int(n_dates * train_ratio)]
+    val_date_end = unique_dates[int(n_dates * (train_ratio + val_ratio))]
+
+    train_mask = (aligned_df["date"] < train_date_end).values
+    val_mask = ((aligned_df["date"] >= train_date_end) & (aligned_df["date"] < val_date_end)).values
+    test_mask = (aligned_df["date"] >= val_date_end).values
+
     X_tab_all = aligned_df[tabular_features].values.astype(np.float32)
     y_all = aligned_df["target_y"].values.astype(int)
 
-    n_total = len(aligned_df)
-    n_train = int(n_total * train_ratio)
-    n_val = int(n_total * val_ratio)
-    train_end = n_train
-    val_end = n_train + n_val
+    # Строго хронологические срезы по календарным датам
+    X_train_tab = X_tab_all[train_mask]
+    X_train_seq = X_seq_all[train_mask]
+    y_train = y_all[train_mask]
 
-    # Строго хронологические срезы
-    # Train: [0 : train_end]
-    X_train_tab = X_tab_all[:train_end]
-    X_train_seq = X_seq_all[:train_end]
-    y_train = y_all[:train_end]
+    X_val_tab = X_tab_all[val_mask]
+    X_val_seq = X_seq_all[val_mask]
+    y_val = y_all[val_mask]
 
-    # Val: [train_end : val_end]
-    X_val_tab = X_tab_all[train_end:val_end]
-    X_val_seq = X_seq_all[train_end:val_end]
-    y_val = y_all[train_end:val_end]
+    X_test_tab = X_tab_all[test_mask]
+    X_test_seq = X_seq_all[test_mask]
+    y_test = y_all[test_mask]
 
-    # Test: [val_end :]
-    X_test_tab = X_tab_all[val_end:]
-    X_test_seq = X_seq_all[val_end:]
-    y_test = y_all[val_end:]
-
-    train_dates = (aligned_df.iloc[0]["date"], aligned_df.iloc[train_end - 1]["date"])
-    val_dates = (aligned_df.iloc[train_end]["date"], aligned_df.iloc[val_end - 1]["date"])
-    test_dates = (aligned_df.iloc[val_end]["date"], aligned_df.iloc[-1]["date"])
+    train_dates = (pd.Timestamp(unique_dates[0]), pd.Timestamp(train_date_end))
+    val_dates = (pd.Timestamp(train_date_end), pd.Timestamp(val_date_end))
+    test_dates = (pd.Timestamp(val_date_end), pd.Timestamp(unique_dates[-1]))
 
     print(
         f"[DatasetBuilder] Выборка для горизонта {horizon_days} дней:\n"
-        f"  Всего сэмплов: {n_total}\n"
+        f"  Всего сэмплов: {len(aligned_df)} (дат: {n_dates})\n"
         f"  Обучение (70%): {len(y_train)} с {train_dates[0].strftime('%Y-%m-%d')} по {train_dates[1].strftime('%Y-%m-%d')}\n"
         f"  Валидация (15%): {len(y_val)} с {val_dates[0].strftime('%Y-%m-%d')} по {val_dates[1].strftime('%Y-%m-%d')}\n"
         f"  Тест (15%): {len(y_test)} с {test_dates[0].strftime('%Y-%m-%d')} по {test_dates[1].strftime('%Y-%m-%d')}"
@@ -180,7 +183,7 @@ def prepare_chronological_splits(
         X_train_seq=X_train_seq,
         X_val_seq=X_val_seq,
         X_test_seq=X_test_seq,
-        df_test=aligned_df.iloc[val_end:].reset_index(drop=True),
+        df_test=aligned_df.loc[test_mask].reset_index(drop=True),
     )
 
 

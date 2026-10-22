@@ -81,58 +81,73 @@ def label_telemetry_dataset(
         # Расчет средней влажности рабочего слоя (для совместимости с табличными моделями)
         mean_ground_moisture = np.round(0.35 * w_05 + 0.30 * w_10 + 0.20 * w_15 + 0.15 * w_20, 1)
 
-        # Вычисление скользящих циклов 0 °C в верхнем слое основания (за 15 дней)
+        # Вычисление скользящих циклов 0 °C и кумулятивных метеопоказателей
         crossings = np.zeros(n, dtype=int)
         for i in range(1, n):
             if (t_air[i - 1] < 0 and t_air[i] >= 0) or (t_air[i - 1] > 0 and t_air[i] <= 0):
                 crossings[i] = 1
-        fc15 = pd.Series(crossings).rolling(15, min_periods=1).sum().values
+        fc30 = pd.Series(crossings).rolling(30, min_periods=1).sum().values
+        fc10 = pd.Series(crossings).rolling(10, min_periods=1).sum().values
 
-        layer_ice = np.zeros(5, dtype=float)
-        heave_depth = np.zeros(n, dtype=float)
-        defect_class = np.zeros(n, dtype=int)
-        is_crack = np.zeros(n, dtype=bool)
+        t_neg = np.where(t_air < 0, t_air, 0.0)
+        tsum30 = pd.Series(t_neg).rolling(30, min_periods=1).sum().values
+        tavg30 = pd.Series(t_air).rolling(30, min_periods=1).mean().values
+        m_avg30 = pd.Series(mean_ground_moisture).rolling(30, min_periods=1).mean().values
+
+        # Физическое моделирование деформаций пучения и трещинообразования (Slozhno.docx):
+        # 1. Монотонное глубокое зимнее промерзание без циклов формирует штатное равномерное пучение (Класс 1, h <= 1.8 см)
+        # 2. Аварийные бугры пучения (>= 3.0 см) и морозобойные трещины (Класс 2) вызываются исключительно знакопеременными циклами F_cross
+        # 3. Дефекты проявляются с характерным геофизическим лагом созревания tau = 30 дней
+        target_class = np.zeros(n, dtype=int)
+        heave_target = np.zeros(n, dtype=float)
+
+        horizon = 30
 
         for i in range(n):
-            t_profile = np.array([t_02[i], t_05[i], t_10[i], t_15[i], t_20[i]])
-            w_profile = np.array([w_05[i], w_05[i], w_10[i], w_15[i], w_20[i]])
+            f30 = fc30[i]
+            f10 = fc10[i]
+            m = m_avg30[i]
+            tsum = tsum30[i]
+            tavg = tavg30[i]
 
-            for k in range(5):
-                tk = t_profile[k]
-                wk = w_profile[k]
+            # Летний безаварийный режим при устойчивых положительных температурах
+            if tavg > 6.0 and f30 == 0:
+                target_class[i] = 0
+                heave_target[i] = 0.1
+                continue
 
-                if tk < 0:
-                    # Относительное пучение суглинка по СП 34.13330 (Приложение Г)
-                    excess_w = max(0.0, (wk - w_critical) / 100.0)
-                    eps_fh = k_heave * excess_w
+            cycle_score = 0.95 * f30 + 0.55 * f10
+            moist_mult = float(np.clip((m - w_critical) / 6.0, 0.0, 2.5))
+            cold_mult = float(np.clip(abs(tsum) / 160.0, 0.0, 2.5))
+            hp_damp = 0.30 if is_hp else 1.0
 
-                    # Циклический коэффициент усиления криогенного расклинивания в приповерхностном слое
-                    cycle_factor = (1.0 + 0.25 * fc15[i]) if k <= 1 else 1.0
+            # Фоновое равномерное пучение от глубокого холода (до 1.6 см)
+            uniform_h = min(1.6, 0.35 * cold_mult) * hp_damp
+            # Сегрегационное пучение за счет циклической подкачки влаги
+            segregation_h = (0.55 * cycle_score * moist_mult * (0.3 + 0.7 * cold_mult)) * hp_damp
+            heave_val = 0.20 + uniform_h + segregation_h
 
-                    # Суточная скорость миграционного нарастания ледяных прослойков
-                    rate = (dz_layers[k] * eps_fh / 25.0) * cycle_factor
-                    layer_ice[k] += rate
-                    layer_ice[k] = min(layer_ice[k], dz_layers[k] * eps_fh * cycle_factor)
-                else:
-                    # Осадка при оттаивании и консолидация грунта
-                    thaw_speed = 0.08 * (tk ** 0.8)
-                    layer_ice[k] = max(0.0, layer_ice[k] - thaw_speed)
+            # Криогенное усталостное растрескивание асфальтобетона при циклах
+            z_c2 = -4.5 + cycle_score * moist_mult + 0.30 * (m - 20.0) - 0.002 * tsum - (3.0 if is_hp else 0.0)
+            p_c2 = 1.0 / (1.0 + np.exp(-z_c2))
+            is_c2 = (p_c2 > 0.40) or (heave_val >= 3.0)
 
-            total_h = round(float(np.sum(layer_ice)), 2)
-            heave_depth[i] = total_h
-
-            # Морозобойное трещинообразование при глубоких деформациях
-            crack_prob = 1.0 / (1.0 + np.exp(-3.5 * (total_h - 2.6))) if total_h >= 2.0 else 0.0
-            crack = (crack_prob > 0.4)
-            is_crack[i] = crack
-
-            # Категорирование дефектов покрытия
-            if total_h >= 3.0 or crack:
-                defect_class[i] = 2
-            elif total_h >= 1.0:
-                defect_class[i] = 1
+            if is_c2 and tavg < 12.0:
+                target_class[i] = 2
+                heave_target[i] = max(3.1, round(heave_val, 2))
+            elif (heave_val >= 1.0 or t_02[i] < 0) and tavg < 15.0:
+                target_class[i] = 1
+                heave_target[i] = round(heave_val, 2)
             else:
-                defect_class[i] = 0
+                target_class[i] = 0
+                heave_target[i] = round(min(0.9, heave_val), 2)
+
+        # Проявление дефектов через лаг созревания tau = 30 дней
+        defect_class = np.zeros(n, dtype=int)
+        heave_depth = np.zeros(n, dtype=float)
+        defect_class[horizon:] = target_class[:-horizon]
+        heave_depth[horizon:] = heave_target[:-horizon]
+        is_crack = (defect_class == 2)
 
         sub["ground_moisture"] = mean_ground_moisture
         sub["heave_depth_cm"] = heave_depth
