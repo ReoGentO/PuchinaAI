@@ -49,6 +49,7 @@ def compute_shap_analysis(
     russian_feature_labels = {
         "f_cross": "F_cross (циклы замерзания 30д)",
         "f_cross_decade": "F_cross_decade (циклы за 10д)",
+        "cumulative_cycles": "Кумулятивные циклы замерзания (сезон)",
         "t_sum": "T_sum (сумма отр. темп.)",
         "t_avg": "T_avg (средняя темп. 30д)",
         "snow_avg": "Снежный покров (средн.)",

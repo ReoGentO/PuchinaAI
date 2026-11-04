@@ -2,14 +2,13 @@
 Модуль построения датасетов с временными лагами и строго хронологическим разбиением.
 
 Реализует:
-1. Этап 1: Инженерия временных меток.
-   - Сдвиг целевой переменной на горизонты прогнозирования tau in {30, 60, 90} дней.
-   - Создание 3 отдельных датасетов под каждый горизонт.
-2. Этап 5: Временная кросс-валидация и разбиение выборки:
-   - Первые 70% по датам — Train
-   - Следующие 15% по датам — Validation
-   - Последние 15% по датам — Test
-   (Без случайного перемешивания, исключая утечку данных из будущего).
+1. Инженерию временных лагов (сдвиг целевой переменной на горизонты tau in {30, 60, 90} дней).
+2. Расчет признаков в разрезе постов мониторинга и сезонов без утечки данных через летние перерывы.
+3. Сезонно-хронологическое разбиение выборки:
+   - Обучающая выборка (Train): начальные сезоны + первая половина предтестового сезона
+   - Валидационная выборка (Val): вторая половина предтестового сезона
+   - Тестовая выборка (Test): полный завершающий сезон (Out-Of-Time оценка без подглядывания)
+4. Исключение признака 'is_heatpipe' из обучающих матриц.
 """
 
 from __future__ import annotations
@@ -37,28 +36,32 @@ class DatasetSplits:
     X_test_tab: np.ndarray
     y_test: np.ndarray
 
-    # Временные последовательности для CNN+LSTM (Batch, Seq_len, Features)
+    # Временные последовательности для CNN+BiLSTM+Attention (Batch, Seq_len, Features)
     seq_feature_names: list[str]
     X_train_seq: np.ndarray
     X_val_seq: np.ndarray
     X_test_seq: np.ndarray
 
-    # Метаданные (исходные даты строк тестовой выборки для графиков динамики)
+    # Метаданные (исходные строки тестовой выборки для графиков динамики)
     df_test: pd.DataFrame
 
 
 def build_lagged_dataset(
     df: pd.DataFrame,
-    horizon_days: int = 90,
+    horizon_days: int = 30,
     window_days: int = 30,
-    seq_length: int = 60,
     output_dir: str | Path | None = None,
 ) -> pd.DataFrame:
     """Формирует датасет для заданного горизонта прогноза tau."""
-    # 1. Расчет физических признаков и сдвиг лага
+    group_keys = []
     if "site_id" in df.columns:
+        group_keys.append("site_id")
+    if "season" in df.columns:
+        group_keys.append("season")
+
+    if group_keys:
         site_dfs = []
-        for s, group in df.groupby("site_id"):
+        for _, group in df.groupby(group_keys):
             group_sorted = group.sort_values("date").reset_index(drop=True)
             group_feat = compute_physical_features(group_sorted, window_days=window_days)
             group_feat["target_y"] = group_feat["defect_class"].shift(-horizon_days)
@@ -68,7 +71,7 @@ def build_lagged_dataset(
         feat_df = compute_physical_features(df, window_days=window_days)
         feat_df["target_y"] = feat_df["defect_class"].shift(-horizon_days)
 
-    # Исключаем последние дни, для которых нет будущего горизонта
+    # Исключаем дни, для которых нет будущего горизонта
     valid_df = feat_df.dropna(subset=["target_y"]).reset_index(drop=True)
     valid_df["target_y"] = valid_df["target_y"].astype(int)
 
@@ -84,19 +87,18 @@ def build_lagged_dataset(
 
 def prepare_chronological_splits(
     df: pd.DataFrame,
-    horizon_days: int = 90,
-    seq_length: int = 60,
-    train_ratio: float = 0.70,
-    val_ratio: float = 0.15,
+    horizon_days: int = 30,
+    seq_length: int = 45,
     tabular_features: list[str] | None = None,
     sequential_features: list[str] | None = None,
     output_dir: str | Path | None = "data/processed",
 ) -> DatasetSplits:
-    """Создает строго хронологическое разбиение данных (70% / 15% / 15%)."""
+    """Создает строго хронологическое разбиение данных с защитой от утечки."""
     if tabular_features is None:
         tabular_features = [
             "f_cross",
             "f_cross_decade",
+            "cumulative_cycles",
             "t_sum",
             "t_avg",
             "snow_avg",
@@ -107,9 +109,17 @@ def prepare_chronological_splits(
         ]
 
     if sequential_features is None:
-        sequential_features = ["t_air", "snow_depth", "day_of_year_norm"]
+        sequential_features = [
+            "t_air_norm",
+            "daily_cycle_flag",
+            "zero_cross_proximity",
+            "cum_cycles_norm",
+            "t_g02_norm",
+            "snow_norm",
+            "moisture_norm",
+        ]
 
-    # 1. Построение датасета с целевой переменной
+    # 1. Построение датасета с лаговой целевой переменной
     lagged_df = build_lagged_dataset(
         df,
         horizon_days=horizon_days,
@@ -124,31 +134,46 @@ def prepare_chronological_splits(
         feature_cols=sequential_features,
     )
 
-    # Синхронизация табличных признаков и меток с последовательностями
     aligned_df = lagged_df.iloc[valid_indices].reset_index(drop=True)
     aligned_df["date"] = pd.to_datetime(aligned_df["date"])
 
-    # Истинное хронологическое разбиение по уникальным календарным датам
-    # Корректно работает как для одиночных рядов, так и для мульти-постовой телеметрии
-    unique_dates = np.sort(aligned_df["date"].unique())
-    n_dates = len(unique_dates)
+    # 3. Сезонно-хронологическое разбиение
+    has_seasons = "season" in aligned_df.columns and aligned_df["season"].nunique() >= 3
 
-    # Для коротких рядов (<= 3 лет) жесткая отсечка 70% оставляет в 15% тесте лишь 4 зимних месяца.
-    # Для обеспечения полного сезонного цикла в тестовой выборке используем адаптивный баланс.
-    eff_train = train_ratio if n_dates > 1000 else 0.55
-    eff_val = val_ratio if n_dates > 1000 else 0.15
+    if has_seasons:
+        unique_seasons = sorted(aligned_df["season"].unique())
+        test_season = unique_seasons[-1]
+        mid_season = unique_seasons[-2]
+        prior_seasons = unique_seasons[:-2]
 
-    train_date_end = unique_dates[int(n_dates * eff_train)]
-    val_date_end = unique_dates[int(n_dates * (eff_train + eff_val))]
+        mid_dates = aligned_df[aligned_df["season"] == mid_season]["date"].sort_values().unique()
+        split_date_mid = mid_dates[int(len(mid_dates) * 0.60)]
 
-    train_mask = (aligned_df["date"] < train_date_end).values
-    val_mask = ((aligned_df["date"] >= train_date_end) & (aligned_df["date"] < val_date_end)).values
-    test_mask = (aligned_df["date"] >= val_date_end).values
+        train_mask = (
+            aligned_df["season"].isin(prior_seasons) |
+            ((aligned_df["season"] == mid_season) & (aligned_df["date"] <= split_date_mid))
+        ).values
 
+        val_mask = (
+            (aligned_df["season"] == mid_season) & (aligned_df["date"] > split_date_mid)
+        ).values
+
+        test_mask = (aligned_df["season"] == test_season).values
+
+    else:
+        unique_dates = np.sort(aligned_df["date"].unique())
+        n_dates = len(unique_dates)
+        train_date_end = unique_dates[int(n_dates * 0.65)]
+        val_date_end = unique_dates[int(n_dates * 0.80)]
+
+        train_mask = (aligned_df["date"] < train_date_end).values
+        val_mask = ((aligned_df["date"] >= train_date_end) & (aligned_df["date"] < val_date_end)).values
+        test_mask = (aligned_df["date"] >= val_date_end).values
+
+    # Табличные признаки и целевая переменная
     X_tab_all = aligned_df[tabular_features].values.astype(np.float32)
     y_all = aligned_df["target_y"].values.astype(int)
 
-    # Строго хронологические срезы по календарным датам
     X_train_tab = X_tab_all[train_mask]
     X_train_seq = X_seq_all[train_mask]
     y_train = y_all[train_mask]
@@ -161,16 +186,20 @@ def prepare_chronological_splits(
     X_test_seq = X_seq_all[test_mask]
     y_test = y_all[test_mask]
 
-    train_dates = (pd.Timestamp(unique_dates[0]), pd.Timestamp(train_date_end))
-    val_dates = (pd.Timestamp(train_date_end), pd.Timestamp(val_date_end))
-    test_dates = (pd.Timestamp(val_date_end), pd.Timestamp(unique_dates[-1]))
+    dates_train = aligned_df.loc[train_mask, "date"]
+    dates_val = aligned_df.loc[val_mask, "date"]
+    dates_test = aligned_df.loc[test_mask, "date"]
+
+    train_dates = (dates_train.min(), dates_train.max())
+    val_dates = (dates_val.min(), dates_val.max())
+    test_dates = (dates_test.min(), dates_test.max())
 
     print(
-        f"[DatasetBuilder] Выборка для горизонта {horizon_days} дней:\n"
-        f"  Всего сэмплов: {len(aligned_df)} (дат: {n_dates})\n"
-        f"  Обучение (70%): {len(y_train)} с {train_dates[0].strftime('%Y-%m-%d')} по {train_dates[1].strftime('%Y-%m-%d')}\n"
-        f"  Валидация (15%): {len(y_val)} с {val_dates[0].strftime('%Y-%m-%d')} по {val_dates[1].strftime('%Y-%m-%d')}\n"
-        f"  Тест (15%): {len(y_test)} с {test_dates[0].strftime('%Y-%m-%d')} по {test_dates[1].strftime('%Y-%m-%d')}"
+        f"[DatasetBuilder] Выборка для горизонта {horizon_days} дней (окно={seq_length}д):\n"
+        f"  Обучение: {len(y_train)} с {train_dates[0].strftime('%Y-%m-%d')} по {train_dates[1].strftime('%Y-%m-%d')}\n"
+        f"  Валидация: {len(y_val)} с {val_dates[0].strftime('%Y-%m-%d')} по {val_dates[1].strftime('%Y-%m-%d')}\n"
+        f"  Тест: {len(y_test)} с {test_dates[0].strftime('%Y-%m-%d')} по {test_dates[1].strftime('%Y-%m-%d')}\n"
+        f"  Распределение классов в тесте: Норма={int((y_test==0).sum())}, Преддефект={int((y_test==1).sum())}, Авария={int((y_test==2).sum())}"
     )
 
     return DatasetSplits(
@@ -196,14 +225,16 @@ def prepare_chronological_splits(
 def create_all_horizons(
     df: pd.DataFrame,
     horizons: tuple[int, ...] = (30, 60, 90),
+    seq_length: int = 45,
     output_dir: str | Path = "data/processed",
 ) -> dict[int, DatasetSplits]:
-    """Генерирует датасеты для всех трех горизонтов прогноза (1, 2, 3 месяца)."""
+    """Генерирует датасеты для всех заданных горизонтов прогноза."""
     splits_dict = {}
     for h in horizons:
         splits = prepare_chronological_splits(
             df=df,
             horizon_days=h,
+            seq_length=seq_length,
             output_dir=output_dir,
         )
         splits_dict[h] = splits

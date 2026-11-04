@@ -30,24 +30,31 @@ class TestPuchinaPipeline(unittest.TestCase):
         self.assertIn("t_sum", feat_df.columns)
         self.assertIn("t_avg", feat_df.columns)
         self.assertIn("f_cross_decade", feat_df.columns)
+        self.assertIn("cumulative_cycles", feat_df.columns)
         self.assertFalse(feat_df["f_cross"].isna().any())
 
     def test_sequence_extraction(self):
-        seq_len = 60
+        seq_len = 45
         X_seq, indices = extract_sequential_windows(self.df, seq_length=seq_len)
         self.assertEqual(len(X_seq.shape), 3)
         self.assertEqual(X_seq.shape[1], seq_len)
-        self.assertEqual(X_seq.shape[2], 3)
+        self.assertEqual(X_seq.shape[2], 7)
         self.assertEqual(len(X_seq), len(self.df) - seq_len + 1)
 
     def test_hybrid_nn_architecture(self):
-        model = build_hybrid_cnn_lstm(seq_length=60, num_features=3, num_classes=3)
-        dummy_input = np.zeros((4, 60, 3), dtype=np.float32)
+        model, att_model = build_hybrid_cnn_lstm(seq_length=45, num_features=7, num_classes=3)
+        dummy_input = np.zeros((4, 45, 7), dtype=np.float32)
         out = model(dummy_input)
         self.assertEqual(out.shape, (4, 3))
         # Softmax outputs sum to 1
         sums = np.sum(out.numpy(), axis=1)
         np.testing.assert_allclose(sums, np.ones(4), atol=1e-5)
+
+        # Attention weights shape: (4, 45, 1) and sum to 1
+        att_w = att_model(dummy_input)
+        self.assertEqual(att_w.shape, (4, 45, 1))
+        att_sums = np.sum(att_w.numpy(), axis=1)
+        np.testing.assert_allclose(att_sums, np.ones((4, 1)), atol=1e-5)
 
 
 if __name__ == "__main__":

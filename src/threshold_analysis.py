@@ -145,13 +145,12 @@ def plot_seasonal_risk_timeline(
     work_df = df_eval.copy()
     work_df["date"] = pd.to_datetime(work_df["date"])
 
-    season_df = work_df[
-        (work_df["date"] >= pd.to_datetime(start_date)) & (work_df["date"] <= pd.to_datetime(end_date))
-    ].sort_values("date")
-
-    if season_df.empty:
-        # Если диапазон вне тестового набора, берем последние 200 дней
-        season_df = work_df.iloc[-220:].sort_values("date")
+    # Если в данных несколько постов, агрегируем по уникальным календарным датам
+    cols_agg = ["t_air"]
+    if proba_col in work_df.columns:
+        cols_agg.append(proba_col)
+    
+    season_df = work_df.groupby("date")[cols_agg].mean().reset_index().sort_values("date")
 
     fig, (ax_temp, ax_risk) = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
 

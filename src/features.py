@@ -4,15 +4,16 @@
 Рассчитывает:
 1. Табличные кумулятивные признаки за скользящее окно (W=30 дней):
    - F_cross: число переходов температуры через 0 °C (циклы замерзания-оттаивания).
+   - F_cross_decade: число переходов через 0 °C за последнюю декаду (10 дней).
+   - cumulative_cycles: кумулятивное число циклов за текущий сезон.
    - T_sum: кумулятивная сумма отрицательных температур за окно (градусо-дни промерзания).
    - T_avg: средняя температура воздуха за окно.
    - Snow_avg, Snow_max: средняя и максимальная высота снежного покрова.
-   - Moisture_avg / Precip_sum: влажность грунта и сумма осадков.
+   - Moisture_avg: влажность грунта.
    - Day_sin, Day_cos: синусно-косинусное кодирование дня года.
-   - F_cross_decade: число переходов через 0 °C за последнюю декаду (10 дней).
 
-2. 3D-тензоры временных последовательностей для нейросети (Batch, 60 дней, 3 признака):
-   - [T_air, Snow, Day_of_year_norm].
+2. 3D-тензоры временных последовательностей для нейросети (Batch, Seq_len, Features):
+   - [T_air_norm, daily_cycle_flag, zero_cross_proximity, cum_cycles_norm, T_ground_0.2_norm, Snow_norm, Moisture_norm].
 """
 
 from __future__ import annotations
@@ -52,10 +53,13 @@ def compute_physical_features(
     n = len(res)
 
     # 1. Индикатор переходов через 0 °C
-    crossings = compute_zero_crossings(t_air)
+    if "daily_cycle_flag" in res.columns:
+        crossings = res["daily_cycle_flag"].values.astype(int)
+    else:
+        crossings = compute_zero_crossings(t_air)
     res["is_zero_crossing"] = crossings
 
-    # F_cross за окно W
+    # F_cross за окно W (30 дней)
     res["f_cross"] = (
         pd.Series(crossings).rolling(window=window_days, min_periods=1).sum().values
     )
@@ -65,10 +69,17 @@ def compute_physical_features(
         pd.Series(crossings).rolling(window=decade_days, min_periods=1).sum().values
     )
 
-    # 2. T_sum — сумма отрицательных температур за окно (сумма градусов холода)
+    # Кумулятивные циклы за сезон
+    if "cumulative_cycles" not in res.columns:
+        res["cumulative_cycles"] = pd.Series(crossings).cumsum().values
+
+    # Непрерывная близость температуры к точке фазового перехода (0 °C)
+    res["zero_cross_proximity"] = np.exp(-np.abs(t_air) / 3.0).round(4)
+
+    # 2. T_sum — сумма отрицательных температур за окно (градусо-дни холода)
     t_neg = np.where(t_air < 0, t_air, 0.0)
     res["t_sum"] = (
-        pd.Series(t_neg).rolling(window=window_days, min_periods=1).sum().values
+        pd.Series(t_neg).rolling(window=window_days, min_periods=1).sum().round(2).values
     )
 
     # 3. T_avg — средняя температура за окно
@@ -99,6 +110,18 @@ def compute_physical_features(
         res["moisture_avg"] = (
             res["ground_moisture"].rolling(window=window_days, min_periods=1).mean().round(2)
         )
+    elif "w_ground_0.5" in res.columns:
+        res["ground_moisture"] = np.round(
+            0.35 * res["w_ground_0.5"] + 0.30 * res.get("w_ground_1.0", 25.0) +
+            0.20 * res.get("w_ground_1.5", 25.0) + 0.15 * res.get("w_ground_2.0", 25.0),
+            1
+        )
+        res["moisture_avg"] = (
+            res["ground_moisture"].rolling(window=window_days, min_periods=1).mean().round(2)
+        )
+    else:
+        res["ground_moisture"] = 22.0
+        res["moisture_avg"] = 22.0
 
     # 5. Циклическое кодирование времени года
     dates = pd.to_datetime(res["date"])
@@ -112,37 +135,83 @@ def compute_physical_features(
 
 def extract_sequential_windows(
     df: pd.DataFrame,
-    seq_length: int = 60,
+    seq_length: int = 45,
     feature_cols: list[str] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Извлекает 3D-тензор временных окон фиксированной длины для нейросети.
 
     Параметры:
         df: подготовленный DataFrame.
-        seq_length: длина временного окна в днях (60 дней).
+        seq_length: длина временного окна в днях (по умолчанию 45 дней).
         feature_cols: список признаков для включения в тензор.
-                      По умолчанию: ['t_air', 'snow_depth', 'day_of_year_norm'].
+                      По умолчанию нормализованные физические каналы.
 
     Возвращает:
         (X_seq, valid_indices):
-        - X_seq: массив размерности (N - seq_length + 1, seq_length, num_features).
+        - X_seq: массив размерности (N_windows, seq_length, num_features).
         - valid_indices: соответствующие индексы строк исходного df.
     """
-    if feature_cols is None:
-        feature_cols = ["t_air", "snow_depth", "day_of_year_norm"]
-
     work_df = df.copy()
-    if "day_of_year_norm" not in work_df.columns:
-        doy = pd.to_datetime(work_df["date"]).dt.dayofyear.values
-        work_df["day_of_year_norm"] = (doy - 1) / 365.25
 
-    if "snow_depth" not in work_df.columns:
-        work_df["snow_depth"] = 0.0
+    # Подготовка нормализованных признаков
+    if "t_air_norm" not in work_df.columns:
+        work_df["t_air_norm"] = (work_df["t_air"] / 20.0).astype(np.float32)
 
+    if "daily_cycle_flag" not in work_df.columns:
+        work_df["daily_cycle_flag"] = compute_zero_crossings(work_df["t_air"].values).astype(np.float32)
+
+    if "zero_cross_proximity" not in work_df.columns:
+        work_df["zero_cross_proximity"] = np.exp(-np.abs(work_df["t_air"]) / 3.0).astype(np.float32)
+
+    if "cum_cycles_norm" not in work_df.columns:
+        if "cumulative_cycles" in work_df.columns:
+            work_df["cum_cycles_norm"] = (work_df["cumulative_cycles"] / 50.0).astype(np.float32)
+        else:
+            work_df["cum_cycles_norm"] = (work_df["daily_cycle_flag"].cumsum() / 50.0).astype(np.float32)
+
+    if "t_g02_norm" not in work_df.columns:
+        if "t_ground_0.2" in work_df.columns:
+            work_df["t_g02_norm"] = (work_df["t_ground_0.2"] / 10.0).astype(np.float32)
+        else:
+            work_df["t_g02_norm"] = 0.0
+
+    if "snow_norm" not in work_df.columns:
+        if "snow_depth" in work_df.columns:
+            work_df["snow_norm"] = (work_df["snow_depth"] / 50.0).astype(np.float32)
+        else:
+            work_df["snow_norm"] = 0.0
+
+    if "moisture_norm" not in work_df.columns:
+        if "ground_moisture" in work_df.columns:
+            work_df["moisture_norm"] = (work_df["ground_moisture"] / 35.0).astype(np.float32)
+        else:
+            work_df["moisture_norm"] = 0.65
+
+    default_features = [
+        "t_air_norm",
+        "daily_cycle_flag",
+        "zero_cross_proximity",
+        "cum_cycles_norm",
+        "t_g02_norm",
+        "snow_norm",
+        "moisture_norm",
+    ]
+
+    if feature_cols is None:
+        feature_cols = default_features
+
+    windows = []
+    valid_indices = []
+
+    # Группировка по (site_id, season) для исключения сквозных окон через летние перерывы
+    group_keys = []
     if "site_id" in work_df.columns:
-        windows = []
-        valid_indices = []
-        for s, group in work_df.groupby("site_id"):
+        group_keys.append("site_id")
+    if "season" in work_df.columns:
+        group_keys.append("season")
+
+    if group_keys:
+        for _, group in work_df.groupby(group_keys):
             g_indices = group.index.values
             g_feat = group[feature_cols].values.astype(np.float32)
             if len(g_feat) < seq_length:
@@ -157,9 +226,6 @@ def extract_sequential_windows(
 
     if n_samples < seq_length:
         raise ValueError(f"Длина датасета ({n_samples}) меньше длины последовательности ({seq_length}).")
-
-    windows = []
-    valid_indices = []
 
     for i in range(seq_length - 1, n_samples):
         window = feat_matrix[i - seq_length + 1 : i + 1]

@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_loader import load_dataset
-from src.dataset_builder import create_all_horizons, prepare_chronological_splits
+from src.dataset_builder import build_lagged_dataset, create_all_horizons, prepare_chronological_splits
 from src.evaluate import evaluate_predictions, generate_comparison_table, plot_confusion_matrices
 from src.features import compute_physical_features
 from src.interpretation import compute_shap_analysis
@@ -106,6 +106,8 @@ def run_full_research_pipeline(
         epochs=epochs,
         batch_size=batch_size,
         figure_save_path="results/figures/training_history.png",
+        attention_save_path="results/figures/attention_weights_zero_crossings.png",
+        df_test=splits.df_test,
     )
 
     # Сохранение обученных моделей на диск
@@ -180,10 +182,7 @@ def run_full_research_pipeline(
     # -------------------------------------------------------------
     print("\n[ЭТАП 7] Формулировка практического порога тревоги...")
     # Оценка риска пучинообразования (деформаций полотна Y >= 1) с полным охватом всех циклов F_cross
-    feat_eval = compute_physical_features(df_raw, window_days=30, decade_days=10)
-    feat_eval["target_y"] = feat_eval["defect_class"].shift(-primary_horizon)
-    eval_df_clean = feat_eval.dropna(subset=["target_y"]).copy()
-    eval_df_clean["target_y"] = eval_df_clean["target_y"].astype(int)
+    eval_df_clean = build_lagged_dataset(df_raw, horizon_days=primary_horizon, window_days=30)
 
     X_all_tab = eval_df_clean[splits.feature_names].values.astype(np.float32)
     probas_all = baseline_results["XGBoost"].model.predict_proba(X_all_tab)
