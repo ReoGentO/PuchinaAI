@@ -38,12 +38,12 @@ class TestPuchinaPipeline(unittest.TestCase):
         X_seq, indices = extract_sequential_windows(self.df, seq_length=seq_len)
         self.assertEqual(len(X_seq.shape), 3)
         self.assertEqual(X_seq.shape[1], seq_len)
-        self.assertEqual(X_seq.shape[2], 7)
+        self.assertEqual(X_seq.shape[2], 8)
         self.assertEqual(len(X_seq), len(self.df) - seq_len + 1)
 
     def test_hybrid_nn_architecture(self):
-        model, att_model = build_hybrid_cnn_lstm(seq_length=45, num_features=7, num_classes=3)
-        dummy_input = np.zeros((4, 45, 7), dtype=np.float32)
+        model, att_model = build_hybrid_cnn_lstm(seq_length=45, num_features=8, num_classes=3)
+        dummy_input = np.zeros((4, 45, 8), dtype=np.float32)
         out = model(dummy_input)
         self.assertEqual(out.shape, (4, 3))
         # Softmax outputs sum to 1

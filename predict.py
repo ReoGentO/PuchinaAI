@@ -177,15 +177,12 @@ def predict_future_risk(
         # Табличные модели (XGBoost, Random Forest)
         tabular_cols = [
             "f_cross",
-            "f_cross_decade",
             "cumulative_cycles",
-            "t_sum",
-            "t_avg",
-            "snow_avg",
-            "snow_max",
             "moisture_avg",
-            "day_sin",
-            "day_cos",
+            "t_sum",
+            "snow_avg",
+            "is_heatpipe",
+            "t_avg",
         ]
         last_row = feat_df.iloc[-1:]
         X_tab = last_row[tabular_cols].values.astype(np.float32)
@@ -254,15 +251,12 @@ def predict_batch(
 
     tabular_cols = [
         "f_cross",
-        "f_cross_decade",
         "cumulative_cycles",
-        "t_sum",
-        "t_avg",
-        "snow_avg",
-        "snow_max",
         "moisture_avg",
-        "day_sin",
-        "day_cos",
+        "t_sum",
+        "snow_avg",
+        "is_heatpipe",
+        "t_avg",
     ]
 
     all_results = []

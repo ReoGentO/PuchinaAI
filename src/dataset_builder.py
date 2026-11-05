@@ -97,15 +97,12 @@ def prepare_chronological_splits(
     if tabular_features is None:
         tabular_features = [
             "f_cross",
-            "f_cross_decade",
             "cumulative_cycles",
-            "t_sum",
-            "t_avg",
-            "snow_avg",
-            "snow_max",
             "moisture_avg",
-            "day_sin",
-            "day_cos",
+            "t_sum",
+            "snow_avg",
+            "is_heatpipe",
+            "t_avg",
         ]
 
     if sequential_features is None:
@@ -117,6 +114,7 @@ def prepare_chronological_splits(
             "t_g02_norm",
             "snow_norm",
             "moisture_norm",
+            "is_heatpipe",
         ]
 
     # 1. Построение датасета с лаговой целевой переменной

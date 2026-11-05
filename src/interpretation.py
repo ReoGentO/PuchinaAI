@@ -47,16 +47,13 @@ def compute_shap_analysis(
 
     # Понятные русскоязычные названия признаков для графиков в статье
     russian_feature_labels = {
-        "f_cross": "F_cross (циклы замерзания 30д)",
-        "f_cross_decade": "F_cross_decade (циклы за 10д)",
-        "cumulative_cycles": "Кумулятивные циклы замерзания (сезон)",
+        "f_cross": "F_cross (активный индекс циклов 0 °C)",
+        "cumulative_cycles": "Кумулятивные циклы (сезонная усталость)",
+        "moisture_avg": "Влажность грунта (рабочий слой)",
         "t_sum": "T_sum (сумма отр. темп.)",
-        "t_avg": "T_avg (средняя темп. 30д)",
         "snow_avg": "Снежный покров (средн.)",
-        "snow_max": "Снежный покров (макс.)",
-        "moisture_avg": "Влажность грунта",
-        "day_sin": "День года (sin)",
-        "day_cos": "День года (cos)",
+        "is_heatpipe": "Инженерные сети (СОУ / термосифоны)",
+        "t_avg": "T_avg (средняя темп.)",
     }
     pretty_names = [russian_feature_labels.get(f, f) for f in feature_names]
 

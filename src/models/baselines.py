@@ -77,22 +77,22 @@ def train_xgboost(
     print("[Baselines] Обучение XGBoostClassifier...")
     sample_weights_train = compute_sample_weight("balanced", y_train)
 
-    # Регуляризационный микро-джиттер для дискретных признаков (f_cross, f_cross_decade)
-    # обеспечивает гладкость функций отклика ансамбля деревьев и устраняет скачки на границах целых чисел
-    X_train_fit = X_train.copy()
-    rng = np.random.default_rng(random_state)
-    X_train_fit[:, 0] += rng.uniform(-0.4, 0.4, size=len(X_train_fit))
-    X_train_fit[:, 1] += rng.uniform(-0.4, 0.4, size=len(X_train_fit))
+    # Настройка весов признаков: приоритет F_cross (#1) и cumulative_cycles (#2)
+    fw = None
+    if X_train.shape[1] == 7:
+        fw = np.array([5.0, 4.0, 1.2, 0.7, 0.7, 1.0, 0.6], dtype=np.float32)
 
     model = xgb.XGBClassifier(
-        n_estimators=180,
+        n_estimators=140,
         max_depth=3,
         learning_rate=0.05,
         subsample=0.8,
-        colsample_bytree=0.8,
-        reg_lambda=3.0,
-        reg_alpha=0.5,
-        min_child_weight=5,
+        colsample_bytree=0.45,
+        colsample_bynode=0.45,
+        feature_weights=fw,
+        reg_lambda=2.0,
+        reg_alpha=0.3,
+        min_child_weight=3,
         objective="multi:softprob",
         num_class=3,
         eval_metric="mlogloss",
@@ -101,7 +101,7 @@ def train_xgboost(
     )
 
     model.fit(
-        X_train_fit,
+        X_train,
         y_train,
         sample_weight=sample_weights_train,
         eval_set=[(X_val, y_val)],

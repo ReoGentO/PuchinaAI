@@ -109,7 +109,7 @@ class HybridNNResult:
 
 def build_hybrid_cnn_lstm(
     seq_length: int = 45,
-    num_features: int = 7,
+    num_features: int = 8,
     num_classes: int = 3,
     rnn_type: Literal["lstm", "gru"] = "lstm",
     learning_rate: float = 0.001,
